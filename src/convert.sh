@@ -19,7 +19,7 @@
 #  Configuration
 #*******************************************************************************
 
-AUDIO_CODEC="aac"
+AUDIO_CODEC="libfdk_aac" # From best to worst: libfdk_aac > libmp3lame/eac3/ac3 > aac
 VIDEO_CODEC="libx265" # Will need Ubuntu 18.04 LTS or later. On average libx265 should produce files half in size of libx264  without losing quality. It is more compute intensive, so transcoding will take longer.
 
 #*******************************************************************************
@@ -35,9 +35,10 @@ Video conversion script.
 
 Available options:
 
--h, --help   Print this help and exit
--f, --force  Force a file to convert even if a lock file exists
--l, --lower  Override default settings with a lower quality encode
+-h, --help             Print this help and exit
+-f, --force            Force a file to convert even if a lock file exists
+-l, --lower            Override default settings with a lower quality encode
+-d, --delete-original  Delete original video once encoding is complete.
 EOF
   exit
 }
@@ -46,11 +47,14 @@ EOF
 #  Main Program
 #*******************************************************************************
 
-. ./common.config
+SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
+
+. "$SCRIPT_DIR/../common.config"
 
 FILENAME=$1
 FORCE=false
 LOWER_QUALITY=false
+DELETE_ORIGINAL=false
 
 # Handle options
 # https://pretzelhands.com/posts/command-line-flags/
@@ -68,6 +72,10 @@ do
     -l|--lower)
     LOWER_QUALITY=true
     shift # Remove --lower from processing
+    ;;
+    -d|--delete-original)
+    DELETE_ORIGINAL=true
+    shift # Remove --delete-original from processing
     ;;
     *)
     FILENAME=("$1")
@@ -164,7 +172,7 @@ check_errs()
   # Function. Parameter 1 is the return code
   # Para. 2 is text to display on failure
   if [ "${1}" -ne "0" ]; then
-    log "# ${1} : ${2}" "error"
+    log "# ${1} : ${2}\n" "error"
     exit ${1}
   fi
 }
@@ -243,11 +251,10 @@ then
   WINDOWS_NEW_FILENAME="${WINDOWS_FILENAME%.*}.$CONVERTED_FILE_EXTENSION.mkv"
   WINDOWS_TEMP_FILENAME="$WINDOWS_NEW_FILENAME.tmp"
 
-  ./ffmpeg.exe -probesize 1500M -analyzeduration 1000M -i "$WINDOWS_FILENAME" -f matroska -s $TARGET_RESOLUTION -c:v "$VIDEO_CODEC"  -preset veryfast -crf "$VIDEO_QUALITY" -vf yadif -codec:a "$AUDIO_CODEC" -b:a "$AUDIO_BITRATE"k -async 1 "$WINDOWS_TEMP_FILENAME"
+  "$SCRIPT_DIR/../bin/ffmpeg.exe" -probesize 1500M -analyzeduration 1000M -i "$WINDOWS_FILENAME" -f matroska -s $TARGET_RESOLUTION -c:v "$VIDEO_CODEC"  -preset veryfast -crf "$VIDEO_QUALITY" -vf yadif -codec:a "$AUDIO_CODEC" -b:a "$AUDIO_BITRATE"k -async 1 "$WINDOWS_TEMP_FILENAME"
 else
   ffmpeg -probesize 1500M -analyzeduration 1000M -i "$FILENAME" -f matroska -s $TARGET_RESOLUTION -c:v "$VIDEO_CODEC"  -preset veryfast -crf "$VIDEO_QUALITY" -vf yadif -codec:a "$AUDIO_CODEC" -b:a "$AUDIO_BITRATE"k -async 1 "$TEMP_FILENAME"
 fi
-
 
 END_TIME=$(date +%s)
 SECONDS="$(( END_TIME - START_TIME ))"
@@ -264,8 +271,13 @@ LOG_STRING_5="Finished transcode\n"
 log "$LOG_STRING_4$LOG_STRING_5"
 
 # Delete original file
-# rm -f "$FILENAME"
-# check_errs $? "Failed to remove original file: $FILENAME"
+if [ "$DELETE_ORIGINAL" = true ]
+then
+  log "Delete original file: $FILENAME\n"
+
+  rm -f "$FILENAME"
+  check_errs $? "Failed to remove original file: $FILENAME"
+fi
 
 # Move completed tempfile to final location
 mv -f "$TEMP_FILENAME" "$NEW_FILENAME"
@@ -273,6 +285,6 @@ check_errs $? "Failed to move converted file: $TEMP_FILENAME"
 
 # Delete the LOCK_FILE
 rm -f "$LOCK_FILE"
-check_errs $? "Failed to remove LOCK_FILE."
+check_errs $? "Failed to remove LOCK_FILE"
 
 log "Done\n"
