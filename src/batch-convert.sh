@@ -39,7 +39,7 @@ EOF
 
 SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 
-. "$SCRIPT_DIR/../common.config"
+. "$SCRIPT_DIR/../.env"
 
 DIRECTORY=$1
 LOWER_QUALITY=false
@@ -99,12 +99,12 @@ log()
 
 # Handle cancelling process
 cleanup() {
-  trap - SIGINT SIGTERM ERR EXIT
+  trap - SIGINT ERR
   log "Interupted, cleaning up\n" "error"
   log "Done\n"
   exit 1
 }
-trap cleanup SIGINT SIGTERM ERR EXIT
+trap cleanup SIGINT ERR
 
 # ********************************************************
 # Scan directory for all video files via Regex

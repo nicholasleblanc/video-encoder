@@ -49,7 +49,7 @@ EOF
 
 SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 
-. "$SCRIPT_DIR/../common.config"
+. "$SCRIPT_DIR/../.env"
 
 FILENAME=$1
 FORCE=false
@@ -139,14 +139,14 @@ log()
 
 # Handle cancelling process
 cleanup() {
-  trap - SIGINT SIGTERM ERR EXIT
+  trap - SIGINT ERR
   log "Interupted, cleaning up\n" "error"
   rm -f "$LOCK_FILE"
   rm -f "$TEMP_FILENAME"
   log "Done\n"
   exit 1
 }
-trap cleanup SIGINT SIGTERM ERR EXIT
+trap cleanup SIGINT ERR
 
 # In order to avoid duplicate processes, if another transcode process is active, exit
 if ls "$LOCK_FILE" 1> /dev/null 2>&1; then
