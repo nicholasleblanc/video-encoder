@@ -1,17 +1,21 @@
 #!/bin/bash
 
+set -o errexit
+set -o nounset
+set -o pipefail
+
 #*******************************************************************************
 #*******************************************************************************
 #
-#  Video Conversion Script
+#  Video Transcode Script
 #
 #*******************************************************************************
 #*******************************************************************************
 #
 #  Pre-requisites:
 #    ffmpeg with libx265
-#      If using on WSL we use the native Windows ffmpeg libraries. Can be
-#      downaloded here: https://github.com/BtbN/FFmpeg-Builds/releases
+#      If running on WSL we use the native Windows ffmpeg libraries. They can be
+#      downloaded here: https://github.com/BtbN/FFmpeg-Builds/releases
 #
 #*******************************************************************************
 
@@ -19,8 +23,8 @@
 #  Configuration
 #*******************************************************************************
 
-AUDIO_CODEC="libfdk_aac" # From best to worst: libfdk_aac > libmp3lame/eac3/ac3 > aac
-VIDEO_CODEC="libx265" # Will need Ubuntu 18.04 LTS or later. On average libx265 should produce files half in size of libx264  without losing quality. It is more compute intensive, so transcoding will take longer.
+readonly AUDIO_CODEC="libfdk_aac" # From best to worst: libfdk_aac > libmp3lame/eac3/ac3 > aac
+readonly VIDEO_CODEC="libx265" # On average libx265 should produce files half in size of libx264  without losing quality. It is more compute intensive, so transcoding will take longer.
 
 #*******************************************************************************
 #  Usage
@@ -28,26 +32,25 @@ VIDEO_CODEC="libx265" # Will need Ubuntu 18.04 LTS or later. On average libx265 
 
 usage()
 {
-  cat << EOF
+  cat << USAGE_TEXT
 Usage: $(basename "${BASH_SOURCE[0]}") [-h] [-f] [-v] filename
 
-Video conversion script.
+Video transcode script.
 
 Available options:
 
--h, --help             Print this help and exit
--f, --force            Force a file to convert even if a lock file exists
--l, --lower            Override default settings with a lower quality encode
 -d, --delete-original  Delete original video once encoding is complete.
-EOF
-  exit
+-f, --force            Force a file to transcode even if a lock file exists
+-h, --help             Print this help and exit
+-l, --lower            Override default settings with a lower quality encode
+USAGE_TEXT
 }
 
 #*******************************************************************************
 #  Main Program
 #*******************************************************************************
 
-SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
+readonly SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 
 . "$SCRIPT_DIR/../.env"
 
@@ -63,7 +66,7 @@ do
   case $arg in
     -h|--help)
     usage
-    exit
+    exit 0
     ;;
     -f|--force)
     FORCE=true
@@ -87,15 +90,15 @@ done
 # Ensure a file name was provided
 if [ -z "$FILENAME" ]
 then
-  echo "Must provide a file to convert."
+  echo "Must provide a file to transcode."
   exit 1
 fi
 
 # Ensure file is a valid video file
-EXTENSION="${FILENAME##*.}"
+readonly EXTENSION="${FILENAME##*.}"
 if [[ ! " ${FILE_TYPES[*]} " =~ " ${EXTENSION} " ]]
 then
-  echo "$FILENAME is not a valid video file."
+  echo "$FILENAME is not a valid video type."
   exit 1
 fi
 
@@ -113,10 +116,10 @@ then
     exit 1
 fi
 
-NEW_FILENAME="${FILENAME%.*}.$CONVERTED_FILE_EXTENSION.mkv"
-TEMP_FILENAME="$NEW_FILENAME.tmp"
-LOCK_FILE="${FILENAME%.*}.$CONVERTED_FILE_EXTENSION.lock"
-LOG_FILE="${FILENAME%.*}.$CONVERTED_FILE_EXTENSION.log"
+readonly NEW_FILENAME="${FILENAME%.*}.$TRANSCODED_FILE_EXTENSION.mkv"
+readonly TEMP_FILENAME="$NEW_FILENAME.tmp"
+readonly LOCK_FILE="${FILENAME%.*}.$TRANSCODED_FILE_EXTENSION.lock"
+readonly LOG_FILE="${FILENAME%.*}.$TRANSCODED_FILE_EXTENSION.log"
 
 # If we're forcing this through, remove any existing lock or temp files
 if [ "$FORCE" = true ]
@@ -138,30 +141,33 @@ log()
 }
 
 # Handle cancelling process
-cleanup() {
-  trap - SIGINT ERR
+clean_up() {
+  trap - ERR EXIT SIGINT SIGTERM
   log "Interupted, cleaning up\n" "error"
   rm -f "$LOCK_FILE"
   rm -f "$TEMP_FILENAME"
   log "Done\n"
   exit 1
 }
-trap cleanup SIGINT ERR
+trap clean_up ERR EXIT SIGINT SIGTERM
 
 # In order to avoid duplicate processes, if another transcode process is active, exit
-if ls "$LOCK_FILE" 1> /dev/null 2>&1; then
+if ls "$LOCK_FILE" 1> /dev/null 2>&1
+then
   log "LOCK_FILE:$LOCK_FILE already exists\n" "error"
   exit 1
 fi
 
 # If the new file already exists, exit
-if ls "$NEW_FILENAME" 1> /dev/null 2>&1; then
+if ls "$NEW_FILENAME" 1> /dev/null 2>&1
+then
   echo "NEW_FILENAME:$NEW_FILENAME already exists\n" "error"
   exit 1
 fi
 
 # If the temp file already exists, exit
-if ls "$TEMP_FILENAME" 1> /dev/null 2>&1; then
+if ls "$TEMP_FILENAME" 1> /dev/null 2>&1
+then
   echo "TEMP_FILENAME:$TEMP_FILENAME already exists\n" "error"
   exit 1
 fi
@@ -171,36 +177,58 @@ check_errs()
 {
   # Function. Parameter 1 is the return code
   # Para. 2 is text to display on failure
-  if [ "${1}" -ne "0" ]; then
+  if [ "${1}" -ne "0" ]
+  then
     log "# ${1} : ${2}\n" "error"
-    exit ${1}
+    exit 1
   fi
 }
 
-FILE_SIZE="$(ls -lh "$FILENAME" | awk '{ print $5 }')"
+readonly FILE_SIZE="$(ls -lh "$FILENAME" | awk '{ print $5 }')"
 
 rm -f "$LOCK_FILE" #Clean up mktemp artifact
 touch "$LOCK_FILE" # Create the lock file
 check_errs $? "Failed to create temporary LOCK_FILE: $LOCK_FILE"
 
-# ********************************************************
-# Detect original resolution
-# ********************************************************
+#*******************************************************************************
+# Windows Subsystem for Linux setup
+#
+# If using WSL, it's much more efficient to run the native Windows executables rather than through
+# Ubuntu or WSL. Luckily, WSL provides everything we need to make this work (including the
+# ability to run Windows .exe files).
+#*******************************************************************************
 
-ORIGINAL_RESOLUTION=$(ffprobe -v error -select_streams v:0 -show_entries stream=height -of csv=p=0 "$FILENAME")
+grep -q microsoft /proc/version && IS_WSL=true ||  IS_WSL=true
 
-# Default target is 1080p
-TARGET_RESOLUTION="hd1080"
-VIDEO_QUALITY=22
-AUDIO_BITRATE=640
+WINDOWS_FILENAME=""
+WINDOWS_NEW_FILENAME=""
+WINDOWS_TEMP_FILENAME=""
 
-if [ "$LOWER_QUALITY" = true ]
+if [ "$IS_WSL" = true ]
 then
-  VIDEO_QUALITY=26
-  AUDIO_BITRATE=192
+  WINDOWS_FILENAME=$(wslpath -w "$FILENAME")
+  WINDOWS_NEW_FILENAME="${WINDOWS_FILENAME%.*}.$TRANSCODED_FILE_EXTENSION.mkv"
+  WINDOWS_TEMP_FILENAME="$WINDOWS_NEW_FILENAME.tmp"
 fi
 
-if [ "$ORIGINAL_RESOLUTION" -gt 2000 ]
+#*******************************************************************************
+# Detect original resolution
+#*******************************************************************************
+
+ORIGINAL_RESOLUTION=0
+if [ "$IS_WSL" = true ]
+then
+  ORIGINAL_RESOLUTION=$("$SCRIPT_DIR/../bin/ffprobe.exe" -v error -select_streams v:0 -show_entries stream=height -of csv=p=0 "$WINDOWS_FILENAME")
+else
+  ORIGINAL_RESOLUTION=$(ffprobe -v error -select_streams v:0 -show_entries stream=height -of csv=p=0 "$FILENAME")
+fi
+ORIGINAL_RESOLUTION=$(echo $ORIGINAL_RESOLUTION | sed 's/[^0-9]*//g') # Cleanup
+
+TARGET_RESOLUTION=""
+VIDEO_QUALITY=0
+AUDIO_BITRATE=0
+
+if [ "$ORIGINAL_RESOLUTION" -ge 2000 ] # 2160p
 then
   TARGET_RESOLUTION="uhd2160"
   VIDEO_QUALITY=25
@@ -211,7 +239,18 @@ then
     VIDEO_QUALITY=30
     AUDIO_BITRATE=192
   fi
-elif [ "$ORIGINAL_RESOLUTION" -lt 1000 ] && [ "$ORIGINAL_RESOLUTION" -ge 700 ]
+elif [ "$ORIGINAL_RESOLUTION" -lt 2000 ] && [ "$ORIGINAL_RESOLUTION" -ge 1000 ] # 1080p
+then
+  TARGET_RESOLUTION="hd1080"
+  VIDEO_QUALITY=22
+  AUDIO_BITRATE=640
+
+  if [ "$LOWER_QUALITY" = true ]
+  then
+    VIDEO_QUALITY=26
+    AUDIO_BITRATE=192
+  fi
+elif [ "$ORIGINAL_RESOLUTION" -lt 1000 ] && [ "$ORIGINAL_RESOLUTION" -ge 700 ] # 720p
 then
   TARGET_RESOLUTION="hd720"
   VIDEO_QUALITY=21
@@ -222,7 +261,7 @@ then
     VIDEO_QUALITY=26
     AUDIO_BITRATE=128
   fi
-elif [ "$ORIGINAL_RESOLUTION" -lt 700 ]
+elif [ "$ORIGINAL_RESOLUTION" -lt 700 ] # 480p
 then
   TARGET_RESOLUTION="hd480"
   VIDEO_QUALITY=22
@@ -234,40 +273,35 @@ then
   fi
 fi
 
-# ********************************************************
+#*******************************************************************************
 # Start transcoding
-# ********************************************************
+#*******************************************************************************
 
 log "Transcoding $FILENAME to $TEMP_FILENAME\n"
 
 log "Using FFMPEG\n"
-log "[$FILE_SIZE -> \n"
 
-START_TIME=$(date +%s)
+readonly START_TIME=$(date +%s)
 
-if grep -q microsoft /proc/version
+if [ "$IS_WSL" = true ]
 then
-  WINDOWS_FILENAME=$(wslpath -w "$FILENAME")
-  WINDOWS_NEW_FILENAME="${WINDOWS_FILENAME%.*}.$CONVERTED_FILE_EXTENSION.mkv"
-  WINDOWS_TEMP_FILENAME="$WINDOWS_NEW_FILENAME.tmp"
-
   "$SCRIPT_DIR/../bin/ffmpeg.exe" -probesize 1500M -analyzeduration 1000M -i "$WINDOWS_FILENAME" -f matroska -s $TARGET_RESOLUTION -c:v "$VIDEO_CODEC"  -preset veryfast -crf "$VIDEO_QUALITY" -vf yadif -codec:a "$AUDIO_CODEC" -b:a "$AUDIO_BITRATE"k -async 1 "$WINDOWS_TEMP_FILENAME"
 else
   ffmpeg -probesize 1500M -analyzeduration 1000M -i "$FILENAME" -f matroska -s $TARGET_RESOLUTION -c:v "$VIDEO_CODEC"  -preset veryfast -crf "$VIDEO_QUALITY" -vf yadif -codec:a "$AUDIO_CODEC" -b:a "$AUDIO_BITRATE"k -async 1 "$TEMP_FILENAME"
 fi
 
-END_TIME=$(date +%s)
-SECONDS="$(( END_TIME - START_TIME ))"
-MINUTES_TAKEN="$(( SECONDS / 60 ))"
-SECONDS_TAKEN="$(( $SECONDS - (MINUTES_TAKEN * 60) ))"
-LOG_STRING_4="$(ls -lh "$TEMP_FILENAME" | awk ' { print $5 }')] - [$MINUTES_TAKEN min $SECONDS_TAKEN sec]\n"
-check_errs $? "Failed to convert."
+readonly END_TIME=$(date +%s)
+readonly SECONDS="$(( END_TIME - START_TIME ))"
+readonly MINUTES_TAKEN="$(( SECONDS / 60 ))"
+readonly SECONDS_TAKEN="$(( $SECONDS - (MINUTES_TAKEN * 60) ))"
+readonly LOG_STRING_4="[$FILE_SIZE -> $(ls -lh "$TEMP_FILENAME" | awk ' { print $5 }')] - [$MINUTES_TAKEN min $SECONDS_TAKEN sec]\n"
+check_errs $? "Failed to transcode"
 
-# ********************************************************"
+#*******************************************************************************"
 # Done transcoding, perform cleanup
-# ********************************************************"
+#*******************************************************************************"
 
-LOG_STRING_5="Finished transcode\n"
+readonly LOG_STRING_5="Finished transcode\n"
 log "$LOG_STRING_4$LOG_STRING_5"
 
 # Delete original file
@@ -281,10 +315,12 @@ fi
 
 # Move completed tempfile to final location
 mv -f "$TEMP_FILENAME" "$NEW_FILENAME"
-check_errs $? "Failed to move converted file: $TEMP_FILENAME"
+check_errs $? "Failed to move transcoded file: $TEMP_FILENAME"
 
 # Delete the LOCK_FILE
 rm -f "$LOCK_FILE"
-check_errs $? "Failed to remove LOCK_FILE"
+check_errs $? "Failed to remove lock file: $LOCK_FILE"
 
 log "Done\n"
+
+exit 0
